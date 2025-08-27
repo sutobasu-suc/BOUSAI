@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <title>映像送受信システム</title>
+  <style>
+    body { font-family: sans-serif; text-align: center; margin: 20px; }
+    h1 { margin-bottom: 10px; }
+    video { width: 80%; max-height: 70vh; background: black; margin-top: 10px; }
+    #loading { font-size: 2em; color: gray; margin-top: 20px; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <h1>映像送受信システム</h1>
+  <div>
+    <label><input type="radio" name="role" value="sender" checked> 管理端末</label>
+    <label><input type="radio" name="role" value="viewer"> 放映端末</label>
+  </div>
+
+  <!-- 管理端末UI -->
+  <div id="senderUI">
+    <p>動画を選択して「送信開始」を押してください</p>
+    <input type="file" id="fileInput" accept="video/*" />
+    <br>
+    <video id="player" controls></video>
+    <br>
+    <button id="sendBtn">送信開始</button>
+  </div>
+
+  <!-- 放映端末UI -->
+  <div id="viewerUI" class="hidden">
+    <div id="loading">? くるくる中…</div>
+    <video id="viewer" autoplay playsinline></video>
+  </div>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+    import { getDatabase, ref, set, onValue, push } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-database.js";
+
+    // ==== Firebase 設定 ====
+    const firebaseConfig = {
+      apiKey: "AIzaSyAg-QM1OnwiFT8rfHbpo9vKgOuYs3KqrR0",
+      authDomain: "bousai-1104e.firebaseapp.com",
+      databaseURL: "https://bousai-1104e-default-rtdb.firebaseio.com",
+      projectId: "bousai-1104e",
+      storageBucket: "bousai-1104e.firebasestorage.app",
+      messagingSenderId: "777966789576",
+      appId: "1:777966789576:web:3c480d93accf116e9396fd",
+      measurementId: "G-9SXKHHZW9J"
+    };
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+    const roomRef = ref(db, "room/simple");
+
+    // ==== 共通変数 ====
+    let pc;
+    const player = document.getElementById("player");
+    const viewer = document.getElementById("viewer");
+    const loading = document.getElementById("loading");
+
+    // ==== UI切替 ====
+    document.querySelectorAll("input[name=role]").forEach(r => {
+      r.onchange = () => {
+        if (r.value === "sender") {
+          document.getElementById("senderUI").classList.remove("hidden");
+          document.getElementById("viewerUI").classList.add("hidden");
+        } else {
+          document.getElementById("senderUI").classList.add("hidden");
+          document.getElementById("viewerUI").classList.remove("hidden");
+          startViewer();
+        }
+      };
+    });
+
+    // ==== Sender（管理端末） ====
+    document.getElementById("fileInput").onchange = () => {
+      const file = fileInput.files[0];
+      if (file) player.src = URL.createObjectURL(file);
+    };
+
+    document.getElementById("sendBtn").onclick = async () => {
+      pc = new RTCPeerConnection();
+      const stream = player.captureStream();
+      stream.getTracks().forEach(track => pc.addTrack(track, stream));
+
+      // ICE candidate
+      pc.onicecandidate = e => {
+        if (e.candidate) {
+          set(ref(db, "room/simple/candidate"), e.candidate.toJSON());
+        }
+      };
+
+      // offer作成
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      set(ref(db, "room/simple/offer"), offer);
+
+      // answer受信
+      onValue(ref(db, "room/simple/answer"), async snap => {
+        const ans = snap.val();
+        if (ans && !pc.currentRemoteDescription) {
+          await pc.setRemoteDescription(new RTCSessionDescription(ans));
+        }
+      });
+
+      player.play();
+    };
+
+    // ==== Viewer（放映端末） ====
+    async function startViewer() {
+      pc = new RTCPeerConnection();
+
+      pc.ontrack = (event) => {
+        viewer.srcObject = event.streams[0];
+        viewer.onloadeddata = () => {
+          loading.classList.add("hidden"); // くるくる消す
+          viewer.loop = false;             // リピートしない
+          viewer.play();
+        };
+      };
+
+      // ICE candidate
+      onValue(ref(db, "room/simple/candidate"), async snap => {
+        const cand = snap.val();
+        if (cand) {
+          try { await pc.addIceCandidate(new RTCIceCandidate(cand)); } catch(e){}
+        }
+      });
+
+      // offer受信
+      onValue(ref(db, "room/simple/offer"), async snap => {
+        const off = snap.val();
+        if (off) {
+          await pc.setRemoteDescription(new RTCSessionDescription(off));
+          const ans = await pc.createAnswer();
+          await pc.setLocalDescription(ans);
+          set(ref(db, "room/simple/answer"), ans);
+        }
+      });
+    }
+  </script>
+</body>
+</html>
